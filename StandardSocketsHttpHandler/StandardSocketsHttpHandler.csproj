@@ -5,14 +5,17 @@
     <RootNamespace>System.Net.Http</RootNamespace>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
-    <Version>2.2.0.4</Version>
-    <Authors>Tal Aloni</Authors>
+    <Version>2.2.0.5</Version>
+    <Authors>Tal Aloni, Aristarkh Zagorodnikov</Authors>
+	<PackageId>Dnet.StandardSocketsHttpHandler</PackageId>
     <PackageDescription>StandardSocketsHttpHandler is a backport of SocketsHttpHandler to .NET Standard 2.0</PackageDescription>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageProjectUrl>https://github.com/TalAloni/StandardSocketsHttpHandler</PackageProjectUrl>
     <RepositoryUrl>https://github.com/TalAloni/StandardSocketsHttpHandler</RepositoryUrl>
     <DebugType>embedded</DebugType>
     <EmbedAllSources>true</EmbedAllSources>
+    <PackageProjectUrl>https://github.com/drivenet/StandardSocketsHttpHandler</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/drivenet/StandardSocketsHttpHandler</RepositoryUrl>
   </PropertyGroup>
 
   <ItemGroup Condition=" '$(TargetFramework)' == 'netstandard2.1' ">
