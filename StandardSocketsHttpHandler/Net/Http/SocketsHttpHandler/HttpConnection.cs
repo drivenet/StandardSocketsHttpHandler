@@ -364,7 +364,7 @@ namespace System.Net.Http
             HttpMethod normalizedMethod = HttpMethodUtils.Normalize(request.Method);
             bool hasExpectContinueHeader = request.HasHeaders() && request.Headers.ExpectContinue == true;
 
-            _canRetry = true;
+            _canRetry = false;
             _startedSendingRequestBody = false;
 
             // Send the request.

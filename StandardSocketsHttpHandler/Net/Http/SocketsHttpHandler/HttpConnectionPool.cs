@@ -288,14 +288,12 @@ namespace System.Net.Http
                     return response;
                 }
 
-                bool isNewConnection = connection.IsNewConnection;
-
                 connection.Acquire();
                 try
                 {
                     return await SendWithNtConnectionAuthAsync((HttpConnection)connection, request, doRequestAuth, cancellationToken).ConfigureAwait(false);                    
                 }
-                catch (HttpRequestException e) when (!isNewConnection && e.InnerException is IOException && connection.CanRetry)
+                catch (HttpRequestException e) when (e.InnerException is IOException && connection.CanRetry)
                 {
                     // Eat exception and try again.
                 }
