@@ -105,7 +105,6 @@ namespace System.Net.Http.Functional.Tests
                 return;
             }
 
-            var contentSending = new TaskCompletionSource<bool>();
             var connectionClosed = new TaskCompletionSource<bool>();
 
             await LoopbackServer.CreateClientAndServerAsync(async url =>
@@ -123,7 +122,7 @@ namespace System.Net.Http.Functional.Tests
                     // to continue and will fail.
                     var request = new HttpRequestMessage(HttpMethod.Post, url);
                     request.Headers.ExpectContinue = true;
-                    request.Content = new SynchronizedSendContent(contentSending, connectionClosed.Task);
+                    request.Content = new SynchronizedSendContent(connectionClosed.Task);
                     await Assert.ThrowsAsync<HttpRequestException>(() => client.SendAsync(request));
                 }
             },
@@ -141,7 +140,7 @@ namespace System.Net.Http.Functional.Tests
                     // Second response: Read request headers, then close connection
                     List<string> lines = await connection.ReadRequestHeaderAsync();
                     Assert.Contains("Expect: 100-continue", lines);
-                    await contentSending.Task;
+                    await Task.Delay(TimeSpan.FromSeconds(1.5));
                 });
                 connectionClosed.SetResult(true);
             });
@@ -150,17 +149,14 @@ namespace System.Net.Http.Functional.Tests
         private sealed class SynchronizedSendContent : HttpContent
         {
             private readonly Task _connectionClosed;
-            private readonly TaskCompletionSource<bool> _sendingContent;
 
-            public SynchronizedSendContent(TaskCompletionSource<bool> sendingContent, Task connectionClosed)
+            public SynchronizedSendContent(Task connectionClosed)
             {
                 _connectionClosed = connectionClosed;
-                _sendingContent = sendingContent;
             }
 
             protected override async Task SerializeToStreamAsync(Stream stream, TransportContext context)
             {
-                _sendingContent.SetResult(true);
                 await _connectionClosed;
                 byte[] data = Encoding.UTF8.GetBytes(s_simpleContent);
                 await stream.WriteAsync(data, 0, data.Length);
