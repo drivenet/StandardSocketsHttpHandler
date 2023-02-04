@@ -463,11 +463,24 @@ namespace System.Net.Http
                 // CRLF for end of headers.
                 await WriteTwoBytesAsync((byte)'\r', (byte)'\n').ConfigureAwait(false);
 
+                // We should not have any buffered data here; if there was, it should have been treated as an error
+                // by the previous request handling.  (Note we do not support HTTP pipelining.)
+                Debug.Assert(_readOffset == _readLength);
+
+                // When the connection was taken out of the pool, a pre-emptive read was performed
+                // into the read buffer. We need to consume that read prior to issuing another read.
+                Task<int> t = ConsumeReadAheadTask();
+
                 Task sendRequestContentTask = null;
                 if (request.Content == null)
                 {
                     // We have nothing more to send, so flush out any headers we haven't yet sent.
                     await FlushAsync().ConfigureAwait(false);
+
+                    if (t != null)
+                    {
+                        await ReadAhead(t, false).ConfigureAwait(false);
+                    }
                 }
                 else
                 {
@@ -476,6 +489,12 @@ namespace System.Net.Http
                     // to run concurrently until we receive the final status line, at which point we wait for it.
                     if (!hasExpectContinueHeader)
                     {
+                        if (t != null)
+                        {
+                            await ReadAhead(t, true).ConfigureAwait(false);
+                            CheckZeroRead();
+                        }
+
                         await SendRequestContentAsync(request, CreateRequestContentStream(request), cancellationToken).ConfigureAwait(false);
                     }
                     else
@@ -484,6 +503,12 @@ namespace System.Net.Http
                         // all of them, and we need to do so before initiating the send, as once we do that, it effectively
                         // owns the right to write, and we don't want to concurrently be accessing the write buffer.
                         await FlushAsync().ConfigureAwait(false);
+
+                        if (t != null)
+                        {
+                            await ReadAhead(t, false).ConfigureAwait(false);
+                            CheckZeroRead();
+                        }
 
                         // Create a TCS we'll use to block the request content from being sent, and create a timer that's used
                         // as a fail-safe to unblock the request content if we don't hear back from the server in a timely manner.
@@ -500,39 +525,13 @@ namespace System.Net.Http
                 // Start to read response.
                 _allowedReadLineBytes = (int)Math.Min(int.MaxValue, _pool.Settings._maxResponseHeadersLength * 1024L);
 
-                // We should not have any buffered data here; if there was, it should have been treated as an error
-                // by the previous request handling.  (Note we do not support HTTP pipelining.)
-                Debug.Assert(_readOffset == _readLength);
-
-                // When the connection was taken out of the pool, a pre-emptive read was performed
-                // into the read buffer. We need to consume that read prior to issuing another read.
-                Task<int> t = ConsumeReadAheadTask();
-                if (t != null)
-                {
-                    int bytesRead = await t.ConfigureAwait(false);
-                    if (NetEventSource.IsEnabled) Trace($"Received {bytesRead} bytes.");
-
-                    _readOffset = 0;
-                    _readLength = bytesRead;
-                }
-                else
+                if (t == null)
                 {
                     // No read-ahead, so issue a read ourselves. We will check below for EOF.
                     await InitialFillAsync().ConfigureAwait(false);
                 }
 
-                if (_readLength == 0)
-                {
-                    // The server shutdown the connection on their end, likely because of an idle timeout.
-                    // If we haven't started sending the request body yet (or there is no request body),
-                    // then we allow the request to be retried.
-                    if (!_startedSendingRequestBody)
-                    {
-                        _canRetry = true;
-                    }
-
-                    throw new IOException(SR.net_http_invalid_response_premature_eof);
-                }
+                CheckZeroRead();
 
                 // Parse the response status line.
                 var response = new HttpResponseMessage() { RequestMessage = request, Content = new HttpConnectionResponseContent() };
@@ -732,6 +731,45 @@ namespace System.Net.Http
                     // Otherwise, just allow the original exception to propagate.
                     throw;
                 }
+            }
+        }
+
+        private async Task ReadAhead(Task<int> task, bool flushIFneeded)
+        {
+            int bytesRead;
+            if (task.IsCompleted)
+            {
+                bytesRead = task.Result;
+            }
+            else
+            {
+                if (flushIFneeded)
+                {
+                    await FlushAsync().ConfigureAwait(false);
+                }
+
+                bytesRead = await task.ConfigureAwait(false);
+            }
+
+            if (NetEventSource.Log.IsEnabled()) Trace($"Received {bytesRead} bytes.");
+
+            _readOffset = 0;
+            _readLength = bytesRead;
+        }
+
+        private void CheckZeroRead()
+        {
+            if (_readLength == 0)
+            {
+                // The server shutdown the connection on their end, likely because of an idle timeout.
+                // If we haven't started sending the request body yet (or there is no request body),
+                // then we allow the request to be retried.
+                if (!_startedSendingRequestBody)
+                {
+                    _canRetry = true;
+                }
+
+                throw new IOException(SR.net_http_invalid_response_premature_eof);
             }
         }
 
