@@ -9,12 +9,15 @@ namespace System.Net.Http
     public sealed class SocketsHttpConnectionContext
     {
         private readonly DnsEndPoint _dnsEndPoint;
+        public HttpRequestMessage InitialRequestMessage => _initialRequestMessage;
 
-        internal SocketsHttpConnectionContext(DnsEndPoint dnsEndPoint)
+        internal SocketsHttpConnectionContext(DnsEndPoint dnsEndPoint, HttpRequestMessage initialRequestMessage)
         {
             _dnsEndPoint = dnsEndPoint;
+            _initialRequestMessage = initialRequestMessage;
         }
 
+        private readonly HttpRequestMessage _initialRequestMessage;
         /// <summary>
         /// The DnsEndPoint to be used by the ConnectCallback to establish the connection.
         /// </summary>

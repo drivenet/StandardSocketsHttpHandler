@@ -39,12 +39,12 @@ namespace System.Net.Http
             }
         }
 
-        public static async Task<(Socket, Stream)> ConnectAsync(string host, int port, Func<SocketsHttpConnectionContext, CancellationToken, Task<Stream>> connectCallback, CancellationToken cancellationToken)
+        public static async Task<(Socket, Stream)> ConnectAsync(string host, int port, HttpRequestMessage initialRequest, Func<SocketsHttpConnectionContext, CancellationToken, Task<Stream>> connectCallback, CancellationToken cancellationToken)
         {
             DnsEndPoint remoteEndPoint = new DnsEndPoint(host, port);
             if (connectCallback != null)
             {
-                Stream stream = await connectCallback(new SocketsHttpConnectionContext(remoteEndPoint), cancellationToken);
+                Stream stream = await connectCallback(new SocketsHttpConnectionContext(remoteEndPoint, initialRequest), cancellationToken);
                 Socket socket = null;
                 if (stream is NetworkStream)
                 {
