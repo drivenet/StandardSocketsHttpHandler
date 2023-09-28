@@ -26,6 +26,8 @@ namespace System.Net.Http
         private readonly string _host;
         private readonly int _port;
         private readonly Uri _proxyUri;
+        private static int _globalId;
+        private readonly int _id = Interlocked.Increment(ref _globalId);
 
         /// <summary>List of idle connections stored in the pool.</summary>
         private readonly List<CachedConnection> _idleConnections = new List<CachedConnection>();
@@ -192,8 +194,21 @@ namespace System.Net.Http
             while (true)
             {
                 CachedConnection cachedConnection;
-                lock (SyncObj)
+                bool locked = false;
+                try
                 {
+                    while (true)
+                    {
+                        Monitor.TryEnter(SyncObj, 1000, ref locked);
+                        if (locked)
+                        {
+                            Diagnostics.Trace.TraceInformation("Entered lock #1 ({0}).", _id);
+                            break;
+                        }
+
+                        Diagnostics.Trace.TraceInformation("Contended lock #1 ({0}).", _id);
+                    }
+
                     if (list.Count > 0)
                     {
                         // Pop off the next connection to try.  We'll test it outside of the lock
@@ -233,8 +248,10 @@ namespace System.Net.Http
                                 waiter._cancellationTokenRegistration = cancellationToken.Register(s =>
                                 {
                                     var innerWaiter = (ConnectionWaiter)s;
+                                    Diagnostics.Trace.TraceWarning("Handling cancellation, entering lock ({0}).", innerWaiter._pool._id);
                                     lock (innerWaiter._pool.SyncObj)
                                     {
+                                        System.Diagnostics.Trace.TraceWarning("Handling cancellation, entered lock ({0}).", innerWaiter._pool._id);
                                         // If it's in the list, remove it and cancel it.
                                         if (innerWaiter._pool.RemoveWaiterForCancellation(innerWaiter))
                                         {
@@ -242,6 +259,8 @@ namespace System.Net.Http
                                             Debug.Assert(canceled);
                                         }
                                     }
+
+                                    System.Diagnostics.Trace.TraceWarning("Handling cancellation, exited lock ({0}).", innerWaiter._pool._id);
                                 }, waiter);
                             }
                             return waiter.Task;
@@ -255,6 +274,14 @@ namespace System.Net.Http
                         // retrieved one has been disposed of.  In the future we could alternatively
                         // try returning such connections to whatever pool is currently considered
                         // current for that endpoint, if there is one.
+                    }
+                }
+                finally
+                {
+                    if (locked)
+                    {
+                        Monitor.Exit(SyncObj);
+                        Diagnostics.Trace.TraceInformation("Exited lock #1 ({0}).", _id);
                     }
                 }
 
@@ -530,7 +557,31 @@ namespace System.Net.Http
         /// </summary>
         public void IncrementConnectionCount()
         {
-            lock (SyncObj) IncrementConnectionCountNoLock();
+            bool locked = false;
+            try
+            {
+                while (true)
+                {
+                    Monitor.TryEnter(SyncObj, 1000, ref locked);
+                    if (locked)
+                    {
+                        Diagnostics.Trace.TraceInformation("Entered lock #2 ({0}).", _id);
+                        break;
+                    }
+
+                    Diagnostics.Trace.TraceInformation("Contended lock #2 ({0}).", _id);
+                }
+
+                IncrementConnectionCountNoLock();
+            }
+            finally
+            {
+                if (locked)
+                {
+                    Monitor.Exit(SyncObj);
+                    Diagnostics.Trace.TraceInformation("Exited lock #2 ({0}).", _id);
+                }
+            }
         }
 
         private void IncrementConnectionCountNoLock()
@@ -554,8 +605,21 @@ namespace System.Net.Http
         public void DecrementConnectionCount()
         {
             if (NetEventSource.IsEnabled) Trace(null);
-            lock (SyncObj)
+            bool locked = false;
+            try
             {
+                while (true)
+                {
+                    Monitor.TryEnter(SyncObj, 1000, ref locked);
+                    if (locked)
+                    {
+                        Diagnostics.Trace.TraceInformation("Entered lock #3 ({0}).", _id);
+                        break;
+                    }
+
+                    Diagnostics.Trace.TraceInformation("Contended lock #3 ({0}).", _id);
+                }
+
                 Debug.Assert(_associatedConnectionCount > 0 && _associatedConnectionCount <= _maxConnections,
                     $"Expected 0 < {_associatedConnectionCount} <= {_maxConnections}");
 
@@ -624,6 +688,14 @@ namespace System.Net.Http
                     }
                 }
             }
+            finally
+            {
+                if (locked)
+                {
+                    Monitor.Exit(SyncObj);
+                    Diagnostics.Trace.TraceInformation("Exited lock #3 ({0}).", _id);
+                }
+            }
         }
         
         /// <summary>Returns the connection to the pool for subsequent reuse.</summary>
@@ -631,8 +703,20 @@ namespace System.Net.Http
         public void ReturnConnection(HttpConnection connection)
         {
             List<CachedConnection> list = _idleConnections;
-            lock (SyncObj)
+            bool locked = false;
+            try
             {
+                while (true)
+                {
+                    Monitor.TryEnter(SyncObj, 1000, ref locked);
+                    if (locked)
+                    {
+                        Diagnostics.Trace.TraceInformation("Entered lock #4 ({0}).", _id);
+                        break;
+                    }
+
+                    Diagnostics.Trace.TraceInformation("Contended lock #4 ({0}).", _id);
+                }
                 Debug.Assert(list.Count <= _maxConnections, $"Expected {list.Count} <= {_maxConnections}");
 
                 // Mark the pool as still being active.
@@ -667,6 +751,14 @@ namespace System.Net.Http
                 list.Add(new CachedConnection(connection));
                 if (NetEventSource.IsEnabled) connection.Trace("Stored connection in pool.");
             }
+            finally
+            {
+                if (locked)
+                {
+                    Monitor.Exit(SyncObj);
+                    Diagnostics.Trace.TraceInformation("Exited lock #4 ({0}).", _id);
+                }
+            }
         }
 
         /// <summary>
@@ -676,8 +768,20 @@ namespace System.Net.Http
         public void Dispose()
         {
             List<CachedConnection> list = _idleConnections;
-            lock (SyncObj)
+            bool locked = false;
+            try
             {
+                while (true)
+                {
+                    Monitor.TryEnter(SyncObj, 1000, ref locked);
+                    if (locked)
+                    {
+                        Diagnostics.Trace.TraceInformation("Entered lock #5 ({0}).", _id);
+                        break;
+                    }
+
+                    Diagnostics.Trace.TraceInformation("Contended lock #5 ({0}).", _id);
+                }
                 if (!_disposed)
                 {
                     if (NetEventSource.IsEnabled) Trace("Disposing pool.");
@@ -686,6 +790,14 @@ namespace System.Net.Http
                     list.Clear();
                 }
                 Debug.Assert(list.Count == 0, $"Expected {nameof(list)}.{nameof(list.Count)} == 0");
+            }
+            finally
+            {
+                if (locked)
+                {
+                    Monitor.Exit(SyncObj);
+                    Diagnostics.Trace.TraceInformation("Exited lock #5 ({0}).", _id);
+                }
             }
         }
 
@@ -707,7 +819,17 @@ namespace System.Net.Http
             try
             {
                 if (NetEventSource.IsEnabled) Trace("Cleaning pool.");
-                Monitor.Enter(SyncObj, ref tookLock);
+                while (true)
+                {
+                    Monitor.TryEnter(SyncObj, 1000, ref tookLock);
+                    if (tookLock)
+                    {
+                        Diagnostics.Trace.TraceInformation("Entered lock #6 ({0}).", _id);
+                        break;
+                    }
+
+                    Diagnostics.Trace.TraceInformation("Contended lock #6 ({0}).", _id);
+                }
 
                 // Get the current time.  This is compared against each connection's last returned
                 // time to determine whether a connection is too old and should be closed.
@@ -775,6 +897,7 @@ namespace System.Net.Http
                 if (tookLock)
                 {
                     Monitor.Exit(SyncObj);
+                    Diagnostics.Trace.TraceInformation("Exited lock #6 ({0}).", _id);
                 }
 
                 // Dispose the stale connections outside the pool lock.
