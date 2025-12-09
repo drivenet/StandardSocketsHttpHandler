@@ -103,6 +103,29 @@ namespace System.Net.Http
             }
         }
 
+        internal void LogExceptions(Task task)
+        {
+            if (task.IsCompleted)
+            {
+                if (task.IsFaulted)
+                {
+                    LogFaulted(this, task);
+                }
+            }
+            else
+            {
+                task.ContinueWith((t, state) => LogFaulted((HttpConnection)state, t), this,
+                    CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously | TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
+            }
+        }
+
+        static void LogFaulted(HttpConnection connection, Task task)
+        {
+            Debug.Assert(task.IsFaulted);
+            Exception e = task.Exception.InnerException; // Access Exception even if not tracing, to avoid TaskScheduler.UnobservedTaskException firing
+            if (NetEventSource.Log.IsEnabled()) connection.Trace($"Exception from asynchronous processing: {e}");
+        }
+
         public void Dispose() => Dispose(disposing: true);
 
         protected void Dispose(bool disposing)
@@ -346,6 +369,7 @@ namespace System.Net.Http
         public async Task<HttpResponseMessage> SendAsyncCore(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             TaskCompletionSource<bool> allowExpect100ToContinue = null;
+            Task sendRequestContentTask = null;
             Debug.Assert(_currentRequest == null, $"Expected null {nameof(_currentRequest)}.");
             Debug.Assert(RemainingBuffer.Length == 0, "Unexpected data in read buffer");
 
@@ -453,7 +477,6 @@ namespace System.Net.Http
                 // CRLF for end of headers.
                 await WriteTwoBytesAsync((byte)'\r', (byte)'\n').ConfigureAwait(false);
 
-                Task sendRequestContentTask = null;
                 if (request.Content == null)
                 {
                     // We have nothing more to send, so flush out any headers we haven't yet sent.
@@ -604,8 +627,9 @@ namespace System.Net.Http
                 // content has been received, so this task should generally already be complete.
                 if (sendRequestContentTask != null)
                 {
-                    await sendRequestContentTask.ConfigureAwait(false);
+                    Task sendTask = sendRequestContentTask;
                     sendRequestContentTask = null;
+                    await sendTask.ConfigureAwait(false);
                 }
 
                 // Determine whether we need to force close the connection when the request/response has completed.
@@ -685,36 +709,82 @@ namespace System.Net.Http
                 allowExpect100ToContinue?.TrySetResult(false);
 
                 if (NetEventSource.IsEnabled) Trace($"Error sending request: {error}");
+
+                // In the rare case where Expect: 100-continue was used and then processing
+                // of the response headers encountered an error such that we weren't able to
+                // wait for the sending to complete, it's possible the sending also encountered
+                // an exception or potentially is still going and will encounter an exception
+                // (we're about to Dispose for the connection). In such cases, we don't want any
+                // exception in that sending task to become unobserved and raise alarm bells, so we
+                // hook up a continuation that will log it.
+                if (sendRequestContentTask != null && !sendRequestContentTask.IsCompletedSuccessfully())
+                {
+                    // In case the connection is disposed, it's most probable that
+                    // expect100Continue timer expired and request content sending failed.
+                    // We're awaiting the task to propagate the exception in this case.
+                    if (_disposed != 0)
+                    {
+                        try
+                        {
+                            await sendRequestContentTask.ConfigureAwait(false);
+                        }
+                        // Map the exception the same way as we normally do.
+                        catch (Exception ex) when (MapSendException(ex, cancellationToken, out Exception mappedEx))
+                        {
+                            throw mappedEx;
+                        }
+                    }
+                    LogExceptions(sendRequestContentTask);
+                }
+
+                // Now clean up the connection.
                 Dispose();
 
                 // At this point, we're going to throw an exception; we just need to
                 // determine which exception to throw.
-
-                if (CancellationHelper.ShouldWrapInOperationCanceledException(error, cancellationToken))
+                if (MapSendException(error, cancellationToken, out Exception mappedException))
                 {
-                    // Cancellation was requested, so assume that the failure is due to
-                    // the cancellation request. This is a bit unorthodox, as usually we'd
-                    // prioritize a non-OperationCanceledException over a cancellation
-                    // request to avoid losing potentially pertinent information.  But given
-                    // the cancellation design where we tear down the underlying connection upon
-                    // a cancellation request, which can then result in a myriad of different
-                    // exceptions (argument exceptions, object disposed exceptions, socket exceptions,
-                    // etc.), as a middle ground we treat it as cancellation, but still propagate the
-                    // original information as the inner exception, for diagnostic purposes.
-                    throw CancellationHelper.CreateOperationCanceledException(error, cancellationToken);
+                    throw mappedException;
                 }
-                else if (error is InvalidOperationException || error is IOException)
-                {
-                    // If it's an InvalidOperationException or an IOException, for consistency
-                    // with other handlers we wrap the exception in an HttpRequestException.
-                    throw new HttpRequestException(SR.net_http_client_execution_error, error);
-                }
-                else
-                {
-                    // Otherwise, just allow the original exception to propagate.
-                    throw;
-                }
+                // Otherwise, just allow the original exception to propagate.
+                throw;
             }
+        }
+
+        private bool MapSendException(Exception exception, CancellationToken cancellationToken, out Exception mappedException)
+        {
+            if (CancellationHelper.ShouldWrapInOperationCanceledException(exception, cancellationToken))
+            {
+                // Cancellation was requested, so assume that the failure is due to
+                // the cancellation request. This is a bit unorthodox, as usually we'd
+                // prioritize a non-OperationCanceledException over a cancellation
+                // request to avoid losing potentially pertinent information.  But given
+                // the cancellation design where we tear down the underlying connection upon
+                // a cancellation request, which can then result in a myriad of different
+                // exceptions (argument exceptions, object disposed exceptions, socket exceptions,
+                // etc.), as a middle ground we treat it as cancellation, but still propagate the
+                // original information as the inner exception, for diagnostic purposes.
+                mappedException = CancellationHelper.CreateOperationCanceledException(exception, cancellationToken);
+                return true;
+            }
+
+            if (exception is InvalidOperationException)
+            {
+                // For consistency with other handlers we wrap the exception in an HttpRequestException.
+                mappedException = new HttpRequestException(SR.net_http_client_execution_error, exception);
+                return true;
+            }
+
+            if (exception is IOException ioe)
+            {
+                // For consistency with other handlers we wrap the exception in an HttpRequestException.
+                mappedException = new HttpRequestException(SR.net_http_client_execution_error, ioe);
+                return true;
+            }
+
+            // Otherwise, just allow the original exception to propagate.
+            mappedException = exception;
+            return false;
         }
 
         public Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
